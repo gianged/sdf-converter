@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/gianged/sdf-converter/compare/v1.0.2...v1.0.3) (2025-11-25)
+
+
+### Bug Fixes
+
+* add support for upgrading SQL Server CE databases to version 4.0 ([e85e3e2](https://github.com/gianged/sdf-converter/commit/e85e3e2e216152fe1cc028535e4b8a8d542e74d8))
+
 ## [1.0.2](https://github.com/gianged/sdf-converter/compare/v1.0.1...v1.0.2) (2025-11-25)
 
 
