@@ -1,5 +1,22 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Weavers xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:noNamespaceSchemaLocation="FodyWeavers.xsd">
-  <Costura />
+  <Costura>
+    <Unmanaged32Assemblies>
+      sqlceca40
+      sqlcecompact40
+      sqlceer40EN
+      sqlceme40
+      sqlceqp40
+      sqlcese40
+    </Unmanaged32Assemblies>
+    <Unmanaged64Assemblies>
+      sqlceca40
+      sqlcecompact40
+      sqlceer40EN
+      sqlceme40
+      sqlceqp40
+      sqlcese40
+    </Unmanaged64Assemblies>
+  </Costura>
 </Weavers>

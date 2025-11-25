@@ -16,20 +16,26 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          dotnet-version: "8.0.x"
 
       - name: Build Release
         run: dotnet publish SdfConverter/SdfConverter.csproj -c Release -o ./publish
 
+      - name: Create Release Archive
+        shell: pwsh
+        run: |
+          # Create zip with exe, config, and native DLL directories
+          Compress-Archive -Path ./publish/SdfConverter.exe, ./publish/SdfConverter.exe.config, ./publish/x86, ./publish/amd64 -DestinationPath ./SdfConverter-${{ github.event.release.tag_name }}.zip
+
       - name: Generate SHA256 Checksum
         shell: pwsh
         run: |
-          $hash = (Get-FileHash -Path ./publish/SdfConverter.exe -Algorithm SHA256).Hash
-          "$hash  SdfConverter.exe" | Out-File -FilePath ./publish/SdfConverter.exe.sha256 -Encoding ASCII
+          $hash = (Get-FileHash -Path ./SdfConverter-${{ github.event.release.tag_name }}.zip -Algorithm SHA256).Hash
+          "$hash  SdfConverter-${{ github.event.release.tag_name }}.zip" | Out-File -FilePath ./SdfConverter-${{ github.event.release.tag_name }}.zip.sha256 -Encoding ASCII
 
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            ./publish/SdfConverter.exe
-            ./publish/SdfConverter.exe.sha256
+            ./SdfConverter-${{ github.event.release.tag_name }}.zip
+            ./SdfConverter-${{ github.event.release.tag_name }}.zip.sha256
