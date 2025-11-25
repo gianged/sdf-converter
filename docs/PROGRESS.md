@@ -4,18 +4,17 @@
 
 | Phase | Component | Status | Files |
 |-------|-----------|--------|-------|
-| 1 | Models | Done | `Models/AttendanceRecord.cs`, `Models/MigrationResult.cs` |
+| 1 | Models | Done | `Models/AttendanceRecord.cs` |
 | 2 | SchemaDiscovery | Done | `SchemaDiscovery.cs`, `Models/TableInfo.cs`, `Models/ColumnInfo.cs`, `Models/ColumnMapping.cs`, `Models/SchemaDiscoveryResult.cs`, `Models/SchemaDiscoveryError.cs` |
 | 3 | SdfReader | Done | `SdfReader.cs`, `Models/SdfReadResult.cs` |
-| 4 | SqlWriter | Pending | `SqlWriter.cs` |
-| 5 | CLI | Pending | `Program.cs` |
+| 4 | SqlWriter | Done | `SqlWriter.cs`, `Models/SourceMetadata.cs`, `Models/ExportResult.cs` |
+| 5 | CLI | Done | `Program.cs` |
 
 ---
 
 ## Phase 1: Models [DONE]
 
 - [x] `AttendanceRecord` record (DeviceUid, Timestamp, VerifyType)
-- [x] `MigrationResult` record (TotalRecords, InsertedCount, DuplicateCount, ErrorCount)
 - [x] `IsExternalInit` polyfill for .NET Framework 4.8
 
 ---
@@ -42,22 +41,23 @@
 
 ---
 
-## Phase 4: SqlWriter [PENDING]
+## Phase 4: SqlWriter [DONE]
 
-- [ ] Generate SQL file header with metadata
-- [ ] Batched INSERT statements (1000 values per batch)
-- [ ] ON CONFLICT DO NOTHING for duplicates
-- [ ] Schema-qualified table names (--schema option)
-- [ ] Track record counts for summary
+- [x] Generate SQL file header with metadata (source, table, count, timestamp)
+- [x] Batched INSERT statements (1000 values per batch)
+- [x] ON CONFLICT DO NOTHING for duplicates
+- [x] Schema-qualified table names (configurable schema)
+- [x] Track record counts for summary
+- [x] New models: `SourceMetadata` (SdfFileName, TableName, RecordCount), `ExportResult` (RecordsWritten, FileSizeBytes, BatchCount)
 
 ---
 
-## Phase 5: CLI [PENDING]
+## Phase 5: CLI [DONE]
 
-- [ ] System.CommandLine argument parsing
-- [ ] --output, --table, --schema, --verbose options
-- [ ] Progress display during export
-- [ ] Summary output with record counts
+- [x] System.CommandLine argument parsing
+- [x] --output, --table, --schema, --verbose options
+- [x] Progress display during export
+- [x] Summary output with record counts
 
 ---
 

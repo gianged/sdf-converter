@@ -14,6 +14,35 @@ SDF file  -->  SdfConverter.exe  -->  output.sql  -->  psql  -->  PostgreSQL
 
 ## Usage
 
+### Interactive Mode (Double-click)
+
+Simply double-click `SdfConverter.exe` and enter the path when prompted.
+
+**Tip:** Place the `.sdf` file in the same folder as the `.exe` and just type the filename:
+
+```
+SDF Converter - Convert attendance data to PostgreSQL SQL
+
+Enter path to .sdf file: attendance.sdf
+
+Opening: attendance.sdf
+Auto-detected table: CHECKINOUT (45,230 rows)
+
+Reading records...
+  [45230/45230] 100%
+
+Writing to: attendance.sql
+  [45230/45230] 100%
+
+Export complete:
+  Records exported: 45,230
+  Output file: attendance.sql (2.3 MB)
+
+Press any key to exit...
+```
+
+### Command Line
+
 ```bash
 SdfConverter.exe <sdf-file> [options]
 
@@ -27,13 +56,16 @@ Options:
 ### Examples
 
 ```bash
-# Auto-detect table, default output
+# Simplest - place .sdf in same folder as .exe
+SdfConverter.exe attendance.sdf
+
+# Specify full path
 SdfConverter.exe "C:\backup\attendance.sdf"
 
 # Specify output and table
 SdfConverter.exe "C:\backup\data.sdf" --table CHECKINOUT -o migration.sql
 
-# Custom PostgreSQL schema
+# Custom PostgreSQL schema with verbose output
 SdfConverter.exe "C:\backup\data.sdf" --schema hr --verbose
 ```
 
