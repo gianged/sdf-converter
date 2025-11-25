@@ -39,13 +39,19 @@ var verboseOption = new Option<bool>("--verbose")
     Description = "Show detailed progress"
 };
 
+var upgradeOption = new Option<bool>("--upgrade")
+{
+    Description = "Upgrade older SQL Server CE database format to 4.0 (creates backup)"
+};
+
 var rootCommand = new RootCommand("Convert SQL Server CE attendance data to PostgreSQL SQL")
 {
     sdfFileArg,
     outputOption,
     tableOption,
     schemaOption,
-    verboseOption
+    verboseOption,
+    upgradeOption
 };
 
 rootCommand.SetAction(parseResult =>
@@ -55,8 +61,9 @@ rootCommand.SetAction(parseResult =>
     var tableName = parseResult.GetValue(tableOption);
     var schemaName = parseResult.GetValue(schemaOption)!;
     var verbose = parseResult.GetValue(verboseOption);
+    var upgrade = parseResult.GetValue(upgradeOption);
 
-    return RunExport(sdfFile, outputFile, tableName, schemaName, verbose);
+    return RunExport(sdfFile, outputFile, tableName, schemaName, verbose, upgrade);
 });
 
 return rootCommand.Parse(args).Invoke();
@@ -103,9 +110,11 @@ static int RunInteractive()
 
     // Prompt for table selection
     string? tableName = null;
+    var upgradePerformed = false;
+
     try
     {
-        using var discovery = new SchemaDiscovery(sdfFile.FullName);
+        using var discovery = OpenWithUpgradePrompt(sdfFile.FullName, out upgradePerformed);
         var tables = discovery.ListTables();
 
         if (tables.Count > 0)
@@ -135,6 +144,18 @@ static int RunInteractive()
             }
         }
     }
+    catch (OperationCanceledException)
+    {
+        Console.WriteLine("Export cancelled.");
+        WaitForKey();
+        return 1;
+    }
+    catch (InvalidOperationException ex) when (ex.InnerException is SqlCeException)
+    {
+        WriteError(ex.Message);
+        WaitForKey();
+        return 1;
+    }
     catch (SqlCeException ex)
     {
         WriteError($"Failed to open SDF file: {ex.Message}");
@@ -149,7 +170,8 @@ static int RunInteractive()
     var schemaName = schemaInput.Length > 0 ? schemaInput : "public";
 
     Console.WriteLine();
-    var result = RunExport(sdfFile, null, tableName, schemaName, false);
+    // Pass upgrade=true since we already handled it in interactive mode
+    var result = RunExport(sdfFile, null, tableName, schemaName, false, upgradePerformed);
 
     WaitForKey();
     return result;
@@ -166,6 +188,50 @@ static void WaitForKey()
 }
 
 /// <summary>
+/// Opens a SchemaDiscovery, prompting user for upgrade consent if needed.
+/// </summary>
+/// <param name="sdfFilePath">Path to the SDF file</param>
+/// <param name="upgradePerformed">Output: whether upgrade was performed</param>
+/// <returns>SchemaDiscovery instance</returns>
+/// <exception cref="OperationCanceledException">If user declines upgrade</exception>
+/// <exception cref="InvalidOperationException">If upgrade fails</exception>
+static SchemaDiscovery OpenWithUpgradePrompt(string sdfFilePath, out bool upgradePerformed)
+{
+    upgradePerformed = false;
+
+    try
+    {
+        return new SchemaDiscovery(sdfFilePath);
+    }
+    catch (SqlCeException ex) when (SdfUpgrader.IsUpgradeRequired(ex))
+    {
+        Console.WriteLine();
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine("Database was created with an older SQL Server CE version.");
+        Console.ResetColor();
+        Console.WriteLine("Upgrade is required to read this file.");
+        Console.WriteLine("A backup will be created before upgrading.");
+        Console.WriteLine();
+        Console.Write("Upgrade now? (Y/N): ");
+
+        var response = Console.ReadLine()?.Trim().ToUpperInvariant();
+        if (response != "Y" && response != "YES")
+        {
+            throw new OperationCanceledException("User declined database upgrade.");
+        }
+
+        Console.WriteLine();
+        var upgradeResult = SdfUpgrader.Upgrade(sdfFilePath, msg => Console.WriteLine($"  {msg}"));
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.WriteLine($"Database upgraded. Backup: {Path.GetFileName(upgradeResult.BackupFilePath)}");
+        Console.ResetColor();
+
+        upgradePerformed = true;
+        return new SchemaDiscovery(sdfFilePath);
+    }
+}
+
+/// <summary>
 /// Executes the SDF to SQL export workflow.
 /// </summary>
 /// <param name="sdfFile">Source SDF file</param>
@@ -173,84 +239,123 @@ static void WaitForKey()
 /// <param name="tableName">Table name override (null = auto-detect)</param>
 /// <param name="schemaName">PostgreSQL schema name</param>
 /// <param name="verbose">Enable verbose output</param>
+/// <param name="upgrade">Allow database upgrade if needed</param>
 /// <returns>Exit code (0 = success, non-zero = error)</returns>
 static int RunExport(
     FileInfo sdfFile,
     FileInfo? outputFile,
     string? tableName,
     string schemaName,
-    bool verbose)
+    bool verbose,
+    bool upgrade)
 {
     var outputPath = outputFile?.FullName
         ?? Path.ChangeExtension(sdfFile.FullName, ".sql");
 
     Console.WriteLine($"Opening: {sdfFile.Name}");
 
+    SchemaDiscovery discovery;
     try
     {
-        using var discovery = new SchemaDiscovery(sdfFile.FullName);
-
-        // List tables in verbose mode
-        if (verbose)
+        discovery = new SchemaDiscovery(sdfFile.FullName);
+    }
+    catch (SqlCeException ex) when (SdfUpgrader.IsUpgradeRequired(ex))
+    {
+        if (!upgrade)
         {
-            var tables = discovery.ListTables();
-            Console.WriteLine($"\nFound {tables.Count} tables:");
-            foreach (var table in tables)
+            WriteError("Database was created with an older SQL Server CE version and requires upgrade.");
+            Console.WriteLine();
+            Console.WriteLine("To upgrade the database (a backup will be created), use:");
+            Console.WriteLine($"  SdfConverter.exe \"{sdfFile.FullName}\" --upgrade");
+            return 4;
+        }
+
+        // Perform upgrade
+        Action<string>? log = verbose ? msg => Console.WriteLine($"  {msg}") : null;
+        try
+        {
+            var upgradeResult = SdfUpgrader.Upgrade(sdfFile.FullName, log);
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"Database upgraded. Backup: {Path.GetFileName(upgradeResult.BackupFilePath)}");
+            Console.ResetColor();
+            Console.WriteLine();
+        }
+        catch (InvalidOperationException upgradeEx)
+        {
+            WriteError(upgradeEx.Message);
+            return 5;
+        }
+
+        // Retry after upgrade
+        discovery = new SchemaDiscovery(sdfFile.FullName);
+    }
+
+    try
+    {
+        using (discovery)
+        {
+            // List tables in verbose mode
+            if (verbose)
             {
-                Console.WriteLine($"  - {table.TableName} ({table.RowCount:N0} rows)");
+                var tables = discovery.ListTables();
+                Console.WriteLine($"\nFound {tables.Count} tables:");
+                foreach (var table in tables)
+                {
+                    Console.WriteLine($"  - {table.TableName} ({table.RowCount:N0} rows)");
+                }
             }
-        }
 
-        // Select attendance table
-        var (schemaResult, schemaError) = tableName != null
-            ? discovery.MapColumns(tableName)
-            : discovery.AutoDetectTable();
+            // Select attendance table
+            var (schemaResult, schemaError) = tableName != null
+                ? discovery.MapColumns(tableName)
+                : discovery.AutoDetectTable();
 
-        if (schemaError != null)
-        {
-            return HandleSchemaError(schemaError);
-        }
-
-        var schema = schemaResult!;
-
-        if (tableName != null)
-        {
-            Console.WriteLine($"Using table: {schema.TableName} ({schema.RowCount:N0} rows)");
-        }
-        else
-        {
-            Console.WriteLine($"Auto-detected table: {schema.TableName} ({schema.RowCount:N0} rows)");
-        }
-
-        // Display column mappings in verbose mode
-        if (verbose)
-        {
-            Console.WriteLine("\nColumn mappings:");
-            foreach (var mapping in schema.Mappings)
+            if (schemaError != null)
             {
-                Console.WriteLine($"  {mapping.SourceColumn} ({mapping.SourceType}) -> {mapping.TargetColumn}");
+                return HandleSchemaError(schemaError);
             }
+
+            var schema = schemaResult!;
+
+            if (tableName != null)
+            {
+                Console.WriteLine($"Using table: {schema.TableName} ({schema.RowCount:N0} rows)");
+            }
+            else
+            {
+                Console.WriteLine($"Auto-detected table: {schema.TableName} ({schema.RowCount:N0} rows)");
+            }
+
+            // Display column mappings in verbose mode
+            if (verbose)
+            {
+                Console.WriteLine("\nColumn mappings:");
+                foreach (var mapping in schema.Mappings)
+                {
+                    Console.WriteLine($"  {mapping.SourceColumn} ({mapping.SourceType}) -> {mapping.TargetColumn}");
+                }
+            }
+
+            // Read records
+            Console.WriteLine("\nReading records...");
+            var reader = new SdfReader(discovery.Connection, schema);
+            var readProgress = CreateProgressReporter(schema.RowCount);
+            var readResult = reader.ReadRecords(readProgress);
+            Console.WriteLine(); // Newline after progress
+
+            // Write SQL file
+            Console.WriteLine($"\nWriting to: {Path.GetFileName(outputPath)}");
+            var writer = new SqlWriter(schemaName);
+            var metadata = new SourceMetadata(sdfFile.Name, schema.TableName, readResult.Records.Count);
+            var writeProgress = CreateProgressReporter(readResult.Records.Count);
+            var exportResult = writer.WriteToFile(outputPath, readResult.Records, metadata, writeProgress);
+            Console.WriteLine(); // Newline after progress
+
+            // Display summary
+            DisplaySummary(readResult, exportResult, outputPath, verbose);
+
+            return 0;
         }
-
-        // Read records
-        Console.WriteLine("\nReading records...");
-        var reader = new SdfReader(discovery.Connection, schema);
-        var readProgress = CreateProgressReporter(schema.RowCount);
-        var readResult = reader.ReadRecords(readProgress);
-        Console.WriteLine(); // Newline after progress
-
-        // Write SQL file
-        Console.WriteLine($"\nWriting to: {Path.GetFileName(outputPath)}");
-        var writer = new SqlWriter(schemaName);
-        var metadata = new SourceMetadata(sdfFile.Name, schema.TableName, readResult.Records.Count);
-        var writeProgress = CreateProgressReporter(readResult.Records.Count);
-        var exportResult = writer.WriteToFile(outputPath, readResult.Records, metadata, writeProgress);
-        Console.WriteLine(); // Newline after progress
-
-        // Display summary
-        DisplaySummary(readResult, exportResult, outputPath, verbose);
-
-        return 0;
     }
     catch (SqlCeException ex)
     {
