@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Data.SqlServerCe;
 using System.IO;
 using System.Linq;
+
 using SdfConverter.Models;
 
 namespace SdfConverter;
@@ -46,9 +47,10 @@ public sealed class SchemaDiscovery : IDisposable
     /// Creates a SchemaDiscovery instance for the specified SDF file.
     /// </summary>
     /// <param name="sdfFilePath">Path to the .sdf file</param>
+    /// <param name="password">Optional database password for encrypted databases</param>
     /// <exception cref="ArgumentException">If path is null or empty</exception>
     /// <exception cref="FileNotFoundException">If file doesn't exist</exception>
-    public SchemaDiscovery(string sdfFilePath)
+    public SchemaDiscovery(string sdfFilePath, string? password = null)
     {
         if (string.IsNullOrWhiteSpace(sdfFilePath))
         {
@@ -60,7 +62,7 @@ public sealed class SchemaDiscovery : IDisposable
             throw new FileNotFoundException($"SDF file not found: {sdfFilePath}", sdfFilePath);
         }
 
-        var connectionString = $"Data Source={sdfFilePath}";
+        var connectionString = SdfUpgrader.BuildConnectionString(sdfFilePath, password);
         _connection = new SqlCeConnection(connectionString);
         _connection.Open();
     }

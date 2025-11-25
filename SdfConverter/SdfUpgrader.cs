@@ -47,14 +47,26 @@ public static class SdfUpgrader
     }
 
     /// <summary>
+    /// Builds a SQL Server CE connection string with optional password.
+    /// </summary>
+    /// <param name="sdfFilePath">Path to the SDF file</param>
+    /// <param name="password">Optional database password</param>
+    /// <returns>Connection string</returns>
+    public static string BuildConnectionString(string sdfFilePath, string? password = null) =>
+        string.IsNullOrEmpty(password)
+            ? $"Data Source={sdfFilePath}"
+            : $"Data Source={sdfFilePath};Password={password}";
+
+    /// <summary>
     /// Upgrades an SDF file to SQL Server CE 4.0 format.
     /// Creates a backup before performing the destructive in-place upgrade.
     /// </summary>
     /// <param name="sdfFilePath">Path to the SDF file to upgrade</param>
+    /// <param name="password">Optional database password for encrypted databases</param>
     /// <param name="log">Optional callback for verbose logging</param>
     /// <returns>Result containing backup path and upgrade status</returns>
     /// <exception cref="InvalidOperationException">If upgrade fails</exception>
-    public static SdfUpgradeResult Upgrade(string sdfFilePath, Action<string>? log = null)
+    public static SdfUpgradeResult Upgrade(string sdfFilePath, string? password = null, Action<string>? log = null)
     {
         log?.Invoke("Creating backup before upgrade...");
         var backupPath = CreateBackup(sdfFilePath);
@@ -64,7 +76,7 @@ public static class SdfUpgrader
         {
             log?.Invoke("Upgrading database to SQL Server CE 4.0 format...");
 
-            var connectionString = $"Data Source={sdfFilePath}";
+            var connectionString = BuildConnectionString(sdfFilePath, password);
             using var engine = new SqlCeEngine(connectionString);
             engine.Upgrade();
 

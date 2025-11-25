@@ -44,6 +44,11 @@ var upgradeOption = new Option<bool>("--upgrade")
     Description = "Upgrade older SQL Server CE database format to 4.0 (creates backup)"
 };
 
+var passwordOption = new Option<string?>("--password", "-p")
+{
+    Description = "Database password for encrypted SDF files"
+};
+
 var rootCommand = new RootCommand("Convert SQL Server CE attendance data to PostgreSQL SQL")
 {
     sdfFileArg,
@@ -51,7 +56,8 @@ var rootCommand = new RootCommand("Convert SQL Server CE attendance data to Post
     tableOption,
     schemaOption,
     verboseOption,
-    upgradeOption
+    upgradeOption,
+    passwordOption
 };
 
 rootCommand.SetAction(parseResult =>
@@ -62,8 +68,9 @@ rootCommand.SetAction(parseResult =>
     var schemaName = parseResult.GetValue(schemaOption)!;
     var verbose = parseResult.GetValue(verboseOption);
     var upgrade = parseResult.GetValue(upgradeOption);
+    var password = parseResult.GetValue(passwordOption);
 
-    return RunExport(sdfFile, outputFile, tableName, schemaName, verbose, upgrade);
+    return RunExport(sdfFile, outputFile, tableName, schemaName, verbose, upgrade, password);
 });
 
 return rootCommand.Parse(args).Invoke();
@@ -110,11 +117,12 @@ static int RunInteractive()
 
     // Prompt for table selection
     string? tableName = null;
+    string? password = null;
     var upgradePerformed = false;
 
     try
     {
-        using var discovery = OpenWithUpgradePrompt(sdfFile.FullName, out upgradePerformed);
+        using var discovery = OpenWithUpgradePrompt(sdfFile.FullName, ref password, out upgradePerformed);
         var tables = discovery.ListTables();
 
         if (tables.Count > 0)
@@ -171,7 +179,7 @@ static int RunInteractive()
 
     Console.WriteLine();
     // Pass upgrade=true since we already handled it in interactive mode
-    var result = RunExport(sdfFile, null, tableName, schemaName, false, upgradePerformed);
+    var result = RunExport(sdfFile, null, tableName, schemaName, false, upgradePerformed, password);
 
     WaitForKey();
     return result;
@@ -188,20 +196,53 @@ static void WaitForKey()
 }
 
 /// <summary>
-/// Opens a SchemaDiscovery, prompting user for upgrade consent if needed.
+/// Checks if the exception indicates a password is required.
+/// </summary>
+/// <param name="ex">The exception to check</param>
+/// <returns>True if password is required</returns>
+static bool IsPasswordRequired(SqlCeException ex) =>
+    ex.Message.IndexOf("password", StringComparison.OrdinalIgnoreCase) >= 0;
+
+/// <summary>
+/// Prompts for database password in interactive mode.
+/// </summary>
+/// <returns>Password entered by user, or null if empty</returns>
+static string? PromptForPassword()
+{
+    Console.WriteLine();
+    Console.Write("Enter database password: ");
+    var password = Console.ReadLine()?.Trim();
+    return string.IsNullOrEmpty(password) ? null : password;
+}
+
+/// <summary>
+/// Opens a SchemaDiscovery, prompting user for upgrade consent and password if needed.
 /// </summary>
 /// <param name="sdfFilePath">Path to the SDF file</param>
+/// <param name="password">Ref: database password (may be set if prompted)</param>
 /// <param name="upgradePerformed">Output: whether upgrade was performed</param>
 /// <returns>SchemaDiscovery instance</returns>
 /// <exception cref="OperationCanceledException">If user declines upgrade</exception>
 /// <exception cref="InvalidOperationException">If upgrade fails</exception>
-static SchemaDiscovery OpenWithUpgradePrompt(string sdfFilePath, out bool upgradePerformed)
+static SchemaDiscovery OpenWithUpgradePrompt(string sdfFilePath, ref string? password, out bool upgradePerformed)
 {
     upgradePerformed = false;
 
     try
     {
-        return new SchemaDiscovery(sdfFilePath);
+        return new SchemaDiscovery(sdfFilePath, password);
+    }
+    catch (SqlCeException ex) when (IsPasswordRequired(ex))
+    {
+        // Database is encrypted, prompt for password
+        password = PromptForPassword();
+        if (password == null)
+        {
+            throw new OperationCanceledException("No password provided for encrypted database.");
+        }
+
+        // Retry with password - may still need upgrade
+        return OpenWithUpgradePrompt(sdfFilePath, ref password, out upgradePerformed);
     }
     catch (SqlCeException ex) when (SdfUpgrader.IsUpgradeRequired(ex))
     {
@@ -221,13 +262,13 @@ static SchemaDiscovery OpenWithUpgradePrompt(string sdfFilePath, out bool upgrad
         }
 
         Console.WriteLine();
-        var upgradeResult = SdfUpgrader.Upgrade(sdfFilePath, msg => Console.WriteLine($"  {msg}"));
+        var upgradeResult = SdfUpgrader.Upgrade(sdfFilePath, password, msg => Console.WriteLine($"  {msg}"));
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.WriteLine($"Database upgraded. Backup: {Path.GetFileName(upgradeResult.BackupFilePath)}");
         Console.ResetColor();
 
         upgradePerformed = true;
-        return new SchemaDiscovery(sdfFilePath);
+        return new SchemaDiscovery(sdfFilePath, password);
     }
 }
 
@@ -240,6 +281,7 @@ static SchemaDiscovery OpenWithUpgradePrompt(string sdfFilePath, out bool upgrad
 /// <param name="schemaName">PostgreSQL schema name</param>
 /// <param name="verbose">Enable verbose output</param>
 /// <param name="upgrade">Allow database upgrade if needed</param>
+/// <param name="password">Database password for encrypted files</param>
 /// <returns>Exit code (0 = success, non-zero = error)</returns>
 static int RunExport(
     FileInfo sdfFile,
@@ -247,7 +289,8 @@ static int RunExport(
     string? tableName,
     string schemaName,
     bool verbose,
-    bool upgrade)
+    bool upgrade,
+    string? password)
 {
     var outputPath = outputFile?.FullName
         ?? Path.ChangeExtension(sdfFile.FullName, ".sql");
@@ -257,7 +300,12 @@ static int RunExport(
     SchemaDiscovery discovery;
     try
     {
-        discovery = new SchemaDiscovery(sdfFile.FullName);
+        discovery = new SchemaDiscovery(sdfFile.FullName, password);
+    }
+    catch (SqlCeException ex) when (IsPasswordRequired(ex))
+    {
+        WriteError("Database is password-protected. Use --password to provide the password.");
+        return 6;
     }
     catch (SqlCeException ex) when (SdfUpgrader.IsUpgradeRequired(ex))
     {
@@ -274,7 +322,7 @@ static int RunExport(
         Action<string>? log = verbose ? msg => Console.WriteLine($"  {msg}") : null;
         try
         {
-            var upgradeResult = SdfUpgrader.Upgrade(sdfFile.FullName, log);
+            var upgradeResult = SdfUpgrader.Upgrade(sdfFile.FullName, password, log);
             Console.ForegroundColor = ConsoleColor.Yellow;
             Console.WriteLine($"Database upgraded. Backup: {Path.GetFileName(upgradeResult.BackupFilePath)}");
             Console.ResetColor();
@@ -287,7 +335,7 @@ static int RunExport(
         }
 
         // Retry after upgrade
-        discovery = new SchemaDiscovery(sdfFile.FullName);
+        discovery = new SchemaDiscovery(sdfFile.FullName, password);
     }
 
     try
