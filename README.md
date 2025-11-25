@@ -51,6 +51,8 @@ Options:
   --table <name>         Attendance table name (auto-detect if omitted)
   --schema <name>        PostgreSQL schema name (default: public)
   --verbose              Show detailed progress
+  --upgrade              Upgrade older SQL Server CE database format to 4.0
+  --password, -p <pwd>   Database password for encrypted SDF files
 ```
 
 ### Examples
@@ -67,7 +69,26 @@ SdfConverter.exe "C:\backup\data.sdf" --table CHECKINOUT -o migration.sql
 
 # Custom PostgreSQL schema with verbose output
 SdfConverter.exe "C:\backup\data.sdf" --schema hr --verbose
+
+# Older SQL CE database (v2.0/3.0/3.5) - upgrade to 4.0
+SdfConverter.exe "C:\backup\old_data.sdf" --upgrade
+
+# Password-protected database
+SdfConverter.exe "C:\backup\encrypted.sdf" --password "secret123"
+
+# Both upgrade and password
+SdfConverter.exe "C:\backup\old_encrypted.sdf" --upgrade --password "secret123"
 ```
+
+## Handling Legacy Databases
+
+### Older SQL CE Versions
+
+SDF files created with SQL Server CE 2.0, 3.0, 3.1, or 3.5 must be upgraded to 4.0 format. Use `--upgrade` to convert automatically. A backup (`.sdf.backup`) is created before upgrading.
+
+### Encrypted Databases
+
+Password-protected SDF files require `--password`. In interactive mode, you'll be prompted if a password is needed.
 
 ## Build
 

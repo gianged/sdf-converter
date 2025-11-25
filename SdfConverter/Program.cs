@@ -262,13 +262,34 @@ static SchemaDiscovery OpenWithUpgradePrompt(string sdfFilePath, ref string? pas
         }
 
         Console.WriteLine();
-        var upgradeResult = SdfUpgrader.Upgrade(sdfFilePath, password, msg => Console.WriteLine($"  {msg}"));
-        Console.ForegroundColor = ConsoleColor.Yellow;
-        Console.WriteLine($"Database upgraded. Backup: {Path.GetFileName(upgradeResult.BackupFilePath)}");
-        Console.ResetColor();
 
-        upgradePerformed = true;
-        return new SchemaDiscovery(sdfFilePath, password);
+        // Try upgrade - may fail if password is needed
+        try
+        {
+            var upgradeResult = SdfUpgrader.Upgrade(sdfFilePath, password, msg => Console.WriteLine($"  {msg}"));
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine($"Database upgraded. Backup: {Path.GetFileName(upgradeResult.BackupFilePath)}");
+            Console.ResetColor();
+
+            upgradePerformed = true;
+            return new SchemaDiscovery(sdfFilePath, password);
+        }
+        catch (InvalidOperationException upgradeEx) when (upgradeEx.InnerException is SqlCeException sqlEx && IsPasswordRequired(sqlEx))
+        {
+            // Upgrade failed due to password - prompt and retry entire flow
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.WriteLine("Database is password-protected.");
+            Console.ResetColor();
+
+            password = PromptForPassword();
+            if (password == null)
+            {
+                throw new OperationCanceledException("No password provided for encrypted database.");
+            }
+
+            // Retry the whole thing with password
+            return OpenWithUpgradePrompt(sdfFilePath, ref password, out upgradePerformed);
+        }
     }
 }
 
