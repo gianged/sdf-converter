@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.4](https://github.com/gianged/sdf-converter/compare/v1.0.3...v1.0.4) (2025-11-25)
+
+
+### Bug Fixes
+
+* add support for encrypted SDF files with password option ([8b0af5b](https://github.com/gianged/sdf-converter/commit/8b0af5b7514e17795a60b41763d8046a9f66d9da))
+
 ## [1.0.3](https://github.com/gianged/sdf-converter/compare/v1.0.2...v1.0.3) (2025-11-25)
 
 
