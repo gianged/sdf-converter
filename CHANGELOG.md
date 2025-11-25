@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.6](https://github.com/gianged/sdf-converter/compare/v1.0.5...v1.0.6) (2025-11-25)
+
+
+### Bug Fixes
+
+* add dynamic record and export functionality with streaming support ([ee6a426](https://github.com/gianged/sdf-converter/commit/ee6a42615ef1302b6caa85bfd55bdb12cf0ec9b6))
+
 ## [1.0.5](https://github.com/gianged/sdf-converter/compare/v1.0.4...v1.0.5) (2025-11-25)
 
 
