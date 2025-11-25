@@ -1,0 +1,30 @@
+# Build outputs
+bin/
+obj/
+publish/
+
+# User-specific files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# Rider
+.idea/
+
+# NuGet
+*.nupkg
+packages/
+
+# Test results
+TestResults/
+
+# OS files
+.DS_Store
+Thumbs.db
