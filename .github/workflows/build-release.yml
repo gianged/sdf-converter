@@ -1,0 +1,35 @@
+name: Build Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build Release
+        run: dotnet publish SdfConverter/SdfConverter.csproj -c Release -o ./publish
+
+      - name: Generate SHA256 Checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash -Path ./publish/SdfConverter.exe -Algorithm SHA256).Hash
+          "$hash  SdfConverter.exe" | Out-File -FilePath ./publish/SdfConverter.exe.sha256 -Encoding ASCII
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ./publish/SdfConverter.exe
+            ./publish/SdfConverter.exe.sha256

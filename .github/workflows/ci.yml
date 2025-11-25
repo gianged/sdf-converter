@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore dependencies
+        run: dotnet restore SdfConverter/SdfConverter.csproj
+
+      - name: Build
+        run: dotnet build SdfConverter/SdfConverter.csproj -c Release --no-restore
+
+      - name: Publish (verify output)
+        run: dotnet publish SdfConverter/SdfConverter.csproj -c Release -o ./publish --no-build
