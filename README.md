@@ -75,12 +75,13 @@ SdfConverter.exe "C:\backup\data.sdf" --schema hr --verbose
 # Development
 dotnet build
 
-# Release (requires .NET Framework 4.8 on target)
+# Release - single .exe (~2.4 MB)
 dotnet publish -c Release
-
-# Self-contained executable (~60-80 MB)
-dotnet publish -c Release -r win-x64 --self-contained
 ```
+
+Output: `bin/Release/net48/publish/SdfConverter.exe`
+
+Copy `SdfConverter.exe` and `SdfConverter.exe.config` to your target machine.
 
 ## Import to PostgreSQL
 

@@ -22,6 +22,9 @@ publish/
 *.nupkg
 packages/
 
+# Fody auto-generated
+FodyWeavers.xsd
+
 # Test results
 TestResults/
 
