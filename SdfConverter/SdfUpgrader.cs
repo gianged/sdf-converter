@@ -64,13 +64,24 @@ public static class SdfUpgrader
     /// <param name="sdfFilePath">Path to the SDF file to upgrade</param>
     /// <param name="password">Optional database password for encrypted databases</param>
     /// <param name="log">Optional callback for verbose logging</param>
+    /// <param name="existingBackupPath">Optional path to existing backup (skips creating new backup)</param>
     /// <returns>Result containing backup path and upgrade status</returns>
     /// <exception cref="InvalidOperationException">If upgrade fails</exception>
-    public static SdfUpgradeResult Upgrade(string sdfFilePath, string? password = null, Action<string>? log = null)
+    public static SdfUpgradeResult Upgrade(string sdfFilePath, string? password = null, Action<string>? log = null, string? existingBackupPath = null)
     {
-        log?.Invoke("Creating backup before upgrade...");
-        var backupPath = CreateBackup(sdfFilePath);
-        log?.Invoke($"Backup created: {Path.GetFileName(backupPath)}");
+        string backupPath;
+
+        if (existingBackupPath != null && File.Exists(existingBackupPath))
+        {
+            log?.Invoke($"Using existing backup: {Path.GetFileName(existingBackupPath)}");
+            backupPath = existingBackupPath;
+        }
+        else
+        {
+            log?.Invoke("Creating backup before upgrade...");
+            backupPath = CreateBackup(sdfFilePath);
+            log?.Invoke($"Backup created: {Path.GetFileName(backupPath)}");
+        }
 
         try
         {

@@ -208,6 +208,28 @@ public sealed class SchemaDiscovery : IDisposable
     }
 
     /// <summary>
+    /// Gets the complete schema of a table including all columns.
+    /// Used for dynamic column export without predefined mappings.
+    /// </summary>
+    /// <param name="tableName">Name of the table</param>
+    /// <returns>TableSchema with all column metadata</returns>
+    /// <exception cref="ArgumentException">If tableName is null or empty</exception>
+    public TableSchema GetTableSchema(string tableName)
+    {
+        ThrowIfDisposed();
+
+        if (string.IsNullOrWhiteSpace(tableName))
+        {
+            throw new ArgumentException("Table name cannot be null or empty.", nameof(tableName));
+        }
+
+        var columns = GetColumns(tableName);
+        var rowCount = GetTableRowCount(tableName);
+
+        return new TableSchema(tableName, rowCount, columns);
+    }
+
+    /// <summary>
     /// Gets column metadata for a specific table.
     /// </summary>
     /// <param name="tableName">Name of the table</param>
