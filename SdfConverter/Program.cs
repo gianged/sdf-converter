@@ -2,6 +2,7 @@ using System;
 using System.CommandLine;
 using System.Data.SqlServerCe;
 using System.IO;
+
 using SdfConverter;
 using SdfConverter.Models;
 
@@ -100,8 +101,55 @@ static int RunInteractive()
         return 1;
     }
 
+    // Prompt for table selection
+    string? tableName = null;
+    try
+    {
+        using var discovery = new SchemaDiscovery(sdfFile.FullName);
+        var tables = discovery.ListTables();
+
+        if (tables.Count > 0)
+        {
+            Console.WriteLine();
+            Console.WriteLine("Available tables:");
+            for (var i = 0; i < tables.Count; i++)
+            {
+                Console.WriteLine($"  [{i + 1}] {tables[i].TableName} ({tables[i].RowCount:N0} rows)");
+            }
+            Console.WriteLine();
+            Console.Write("Select table number (or press Enter to auto-detect): ");
+            var tableInput = Console.ReadLine()?.Trim();
+
+            if (!string.IsNullOrEmpty(tableInput) && int.TryParse(tableInput, out var tableIndex))
+            {
+                if (tableIndex >= 1 && tableIndex <= tables.Count)
+                {
+                    tableName = tables[tableIndex - 1].TableName;
+                }
+                else
+                {
+                    WriteError($"Invalid table number. Must be between 1 and {tables.Count}.");
+                    WaitForKey();
+                    return 1;
+                }
+            }
+        }
+    }
+    catch (SqlCeException ex)
+    {
+        WriteError($"Failed to open SDF file: {ex.Message}");
+        WaitForKey();
+        return 1;
+    }
+
+    // Prompt for schema name
     Console.WriteLine();
-    var result = RunExport(sdfFile, null, null, "public", false);
+    Console.Write("PostgreSQL schema name (default: public): ");
+    var schemaInput = Console.ReadLine()?.Trim() ?? string.Empty;
+    var schemaName = schemaInput.Length > 0 ? schemaInput : "public";
+
+    Console.WriteLine();
+    var result = RunExport(sdfFile, null, tableName, schemaName, false);
 
     WaitForKey();
     return result;
