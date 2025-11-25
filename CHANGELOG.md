@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.5](https://github.com/gianged/sdf-converter/compare/v1.0.4...v1.0.5) (2025-11-25)
+
+
+### Bug Fixes
+
+* fix interactive mode ([c9fcd6b](https://github.com/gianged/sdf-converter/commit/c9fcd6bca491b7482f5318666b43cb645b44335b))
+
 ## [1.0.4](https://github.com/gianged/sdf-converter/compare/v1.0.3...v1.0.4) (2025-11-25)
 
 
