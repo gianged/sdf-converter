@@ -6,7 +6,12 @@ using System.IO;
 using System.Linq;
 
 using SdfConverter;
+using SdfConverter.Dialects;
 using SdfConverter.Models;
+using SdfConverter.Sdf;
+using SdfConverter.Writing;
+
+using static Cli;
 
 // Interactive mode when no arguments provided (double-click scenario)
 if (args.Length == 0)
@@ -15,31 +20,21 @@ if (args.Length == 0)
 }
 
 // --- Command Definition ---
-var sdfFileArg = new Argument<FileInfo>("sdf-file")
+var fileOption = new Option<string?>("--file", "-f")
 {
-    Description = "Path to .sdf file"
-}.AcceptExistingOnly();
-
-var outputOption = new Option<FileInfo?>("--output", "-o")
-{
-    Description = "Output .sql file path"
+    Description = ".sdf file or folder to scan (default: the exe's folder)"
 };
 
 var tableOption = new Option<string[]>("--table", "-t")
 {
-    Description = "Table name(s) to export (can specify multiple: --table T1 --table T2)",
+    Description = "Table name(s) to export; repeatable. Omitted = all tables.",
     AllowMultipleArgumentsPerToken = true
 };
 
-var allTablesOption = new Option<bool>("--all-tables")
+var outputOption = new Option<string>("--output", "-o")
 {
-    Description = "Export all tables from the database"
-};
-
-var schemaOption = new Option<string>("--schema")
-{
-    Description = "PostgreSQL schema name",
-    DefaultValueFactory = _ => "public"
+    Description = "Output SQL dialect: sqlite (default), postgres, mssql, mysql, mariadb",
+    DefaultValueFactory = _ => "sqlite"
 };
 
 var verboseOption = new Option<bool>("--verbose")
@@ -57,13 +52,11 @@ var passwordOption = new Option<string?>("--password", "-p")
     Description = "Database password for encrypted SDF files"
 };
 
-var rootCommand = new RootCommand("Convert SQL Server CE data to PostgreSQL SQL")
+var rootCommand = new RootCommand("Convert SQL Server CE (.sdf) tables to SQL for a chosen dialect")
 {
-    sdfFileArg,
-    outputOption,
+    fileOption,
     tableOption,
-    allTablesOption,
-    schemaOption,
+    outputOption,
     verboseOption,
     upgradeOption,
     passwordOption
@@ -71,577 +64,569 @@ var rootCommand = new RootCommand("Convert SQL Server CE data to PostgreSQL SQL"
 
 rootCommand.SetAction(parseResult =>
 {
-    var sdfFile = parseResult.GetValue(sdfFileArg)!;
-    var outputFile = parseResult.GetValue(outputOption);
-    var tableNames = parseResult.GetValue(tableOption) ?? Array.Empty<string>();
-    var allTables = parseResult.GetValue(allTablesOption);
-    var schemaName = parseResult.GetValue(schemaOption)!;
+    var fileOrFolder = parseResult.GetValue(fileOption);
+    var tableNames = parseResult.GetValue(tableOption) ?? [];
+    var outputFormat = parseResult.GetValue(outputOption)!;
     var verbose = parseResult.GetValue(verboseOption);
     var upgrade = parseResult.GetValue(upgradeOption);
     var password = parseResult.GetValue(passwordOption);
 
-    return RunExport(sdfFile, outputFile, tableNames, allTables, schemaName, verbose, upgrade, password);
+    if (!TryParseDialect(outputFormat, out var dialectKind))
+    {
+        WriteError($"Unknown output format '{outputFormat}'. Valid: sqlite, postgres, mssql, mysql, mariadb.");
+        return (int)ExitCode.UnknownFormat;
+    }
+
+    var files = ResolveSdfFiles(fileOrFolder);
+    if (files.Count == 0)
+    {
+        WriteError(string.IsNullOrWhiteSpace(fileOrFolder)
+            ? $"No .sdf files found in {AppContext.BaseDirectory}"
+            : $"No .sdf file(s) found at: {fileOrFolder}");
+        return (int)ExitCode.NoInput;
+    }
+
+    return RunExport(files, tableNames, dialectKind, verbose, upgrade, password);
 });
 
 return rootCommand.Parse(args).Invoke();
 
-// --- Static Helper Methods ---
-
-/// <summary>
-/// Runs interactive mode when no command-line arguments provided.
-/// </summary>
-/// <returns>Exit code</returns>
-static int RunInteractive()
+internal static class Cli
 {
-    Console.WriteLine("SDF Converter - Convert attendance data to PostgreSQL SQL");
-    Console.WriteLine();
-
-    Console.Write("Enter path to .sdf file: ");
-    var input = Console.ReadLine()?.Trim().Trim('"');
-
-    if (string.IsNullOrEmpty(input))
+    /// <summary>
+    /// Resolves the -f/--file value to .sdf paths: empty scans the exe folder,
+    /// a folder scans *.sdf, a file returns itself. Empty list if nothing matches.
+    /// </summary>
+    internal static List<string> ResolveSdfFiles(string? fileOrFolder)
     {
-        WriteError("No file path provided.");
-        WaitForKey();
-        return 1;
+        if (string.IsNullOrWhiteSpace(fileOrFolder))
+        {
+            return EnumerateSdf(AppContext.BaseDirectory);
+        }
+
+        var trimmed = fileOrFolder!.Trim().Trim('"');
+
+        if (Directory.Exists(trimmed))
+        {
+            return EnumerateSdf(trimmed);
+        }
+
+        if (File.Exists(trimmed))
+        {
+            return [Path.GetFullPath(trimmed)];
+        }
+
+        // Relative path didn't resolve against the working directory: try the exe folder.
+        if (!Path.IsPathRooted(trimmed))
+        {
+            var candidate = Path.Combine(AppContext.BaseDirectory, trimmed);
+            if (File.Exists(candidate))
+            {
+                return [candidate];
+            }
+
+            if (Directory.Exists(candidate))
+            {
+                return EnumerateSdf(candidate);
+            }
+        }
+
+        return [];
     }
 
-    // Try input as-is first, then check .exe's directory for just filename
-    var sdfFile = new FileInfo(input);
-    if (!sdfFile.Exists && !Path.IsPathRooted(input))
+    static List<string> EnumerateSdf(string directory) =>
+        Directory.EnumerateFiles(directory, "*.sdf", SearchOption.TopDirectoryOnly)
+            .Select(Path.GetFullPath)
+            .ToList();
+
+    /// <summary>Maps a friendly format name to a dialect (Sqlite when unrecognized); true if recognized.</summary>
+    internal static bool TryParseDialect(string text, out SqlDialectKind kind)
     {
-        var exeDir = AppDomain.CurrentDomain.BaseDirectory;
-        var inExeDir = Path.Combine(exeDir, input);
-        if (File.Exists(inExeDir))
+        switch (text.Trim().ToLowerInvariant())
         {
-            sdfFile = new FileInfo(inExeDir);
+            case "sqlite":
+                kind = SqlDialectKind.Sqlite;
+                return true;
+            case "postgres":
+            case "postgresql":
+            case "pg":
+                kind = SqlDialectKind.Postgres;
+                return true;
+            case "mssql":
+            case "sqlserver":
+            case "sql-server":
+                kind = SqlDialectKind.SqlServer;
+                return true;
+            case "mysql":
+                kind = SqlDialectKind.MySql;
+                return true;
+            case "mariadb":
+                kind = SqlDialectKind.MariaDb;
+                return true;
+            default:
+                kind = SqlDialectKind.Sqlite;
+                return false;
         }
     }
 
-    if (!sdfFile.Exists)
+    /// <summary>Runs the interactive prompt flow used when no arguments are passed.</summary>
+    internal static int RunInteractive()
     {
-        WriteError($"File not found: {input}");
-        WaitForKey();
-        return 1;
-    }
+        Console.WriteLine("SDF Converter - Convert SQL Server CE data to SQL");
+        Console.WriteLine();
 
-    // Prompt for table selection
-    var tableNames = Array.Empty<string>();
-    var allTables = false;
-    string? password = null;
-    var upgradePerformed = false;
+        Console.Write("Enter path to .sdf file or folder (Enter = scan this folder): ");
+        var input = Console.ReadLine()?.Trim().Trim('"');
 
-    try
-    {
-        using var discovery = OpenWithUpgradePrompt(sdfFile.FullName, ref password, out upgradePerformed);
-        var tables = discovery.ListTables();
-
-        if (tables.Count > 0)
+        var files = ResolveSdfFiles(string.IsNullOrEmpty(input) ? null : input);
+        if (files.Count == 0)
         {
-            Console.WriteLine();
-            Console.WriteLine("Available tables:");
-            for (var i = 0; i < tables.Count; i++)
-            {
-                Console.WriteLine($"  [{i + 1}] {tables[i].TableName} ({tables[i].RowCount:N0} rows)");
-            }
-            Console.WriteLine();
-            Console.WriteLine("Select table(s):");
-            Console.WriteLine("  - Enter number(s) separated by commas (e.g., 1,3,5)");
-            Console.WriteLine("  - Enter 'A' for all tables");
-            Console.WriteLine("  - Press Enter to auto-detect");
-            Console.Write("Choice: ");
-            var tableInput = Console.ReadLine()?.Trim();
+            WriteError("No .sdf files found.");
+            WaitForKey();
+            return (int)ExitCode.NoInput;
+        }
 
-            if (!string.IsNullOrEmpty(tableInput))
-            {
-                if (tableInput!.Equals("A", StringComparison.OrdinalIgnoreCase))
-                {
-                    allTables = true;
-                }
-                else
-                {
-                    // Parse comma-separated numbers
-                    var selectedTables = new List<string>();
-                    var parts = tableInput.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+        string[] tableNames = [];
+        string? password = null;
 
-                    foreach (var part in parts)
+        if (files.Count == 1)
+        {
+            try
+            {
+                using var discovery = OpenWithUpgradePrompt(files[0], ref password);
+                var tables = discovery.ListTables();
+
+                if (tables.Count > 0)
+                {
+                    Console.WriteLine();
+                    Console.WriteLine("Available tables:");
+                    for (var i = 0; i < tables.Count; i++)
                     {
-                        if (int.TryParse(part.Trim(), out var tableIndex))
+                        Console.WriteLine($"  [{i + 1}] {tables[i].TableName} ({tables[i].RowCount:N0} rows)");
+                    }
+                    Console.WriteLine();
+                    Console.WriteLine("Select table(s):");
+                    Console.WriteLine("  - Enter number(s) separated by commas (e.g., 1,3,5)");
+                    Console.WriteLine("  - Press Enter for all tables");
+                    Console.Write("Choice: ");
+                    var tableInput = Console.ReadLine()?.Trim();
+
+                    if (!string.IsNullOrEmpty(tableInput))
+                    {
+                        var selectedTables = new List<string>();
+                        var parts = tableInput!.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+
+                        foreach (var part in parts)
                         {
-                            if (tableIndex >= 1 && tableIndex <= tables.Count)
+                            if (int.TryParse(part.Trim(), out var tableIndex) && tableIndex >= 1 && tableIndex <= tables.Count)
                             {
                                 selectedTables.Add(tables[tableIndex - 1].TableName);
                             }
                             else
                             {
-                                WriteError($"Invalid table number: {tableIndex}. Must be between 1 and {tables.Count}.");
+                                WriteError($"Invalid table selection: {part}. Expected a number between 1 and {tables.Count}.");
                                 WaitForKey();
-                                return 1;
+                                return (int)ExitCode.Failed;
                             }
                         }
-                        else
-                        {
-                            WriteError($"Invalid input: {part}. Expected a number.");
-                            WaitForKey();
-                            return 1;
-                        }
-                    }
 
-                    tableNames = selectedTables.ToArray();
+                        tableNames = selectedTables.ToArray();
+                    }
                 }
             }
-        }
-    }
-    catch (OperationCanceledException)
-    {
-        Console.WriteLine("Export cancelled.");
-        WaitForKey();
-        return 1;
-    }
-    catch (InvalidOperationException ex) when (ex.InnerException is SqlCeException)
-    {
-        WriteError(ex.Message);
-        WaitForKey();
-        return 1;
-    }
-    catch (SqlCeException ex)
-    {
-        WriteError($"Failed to open SDF file: {ex.Message}");
-        WaitForKey();
-        return 1;
-    }
-
-    // Prompt for schema name
-    Console.WriteLine();
-    Console.Write("PostgreSQL schema name (default: public): ");
-    var schemaInput = Console.ReadLine()?.Trim() ?? string.Empty;
-    var schemaName = schemaInput.Length > 0 ? schemaInput : "public";
-
-    Console.WriteLine();
-    // Pass upgrade=true since we already handled it in interactive mode
-    var result = RunExport(sdfFile, null, tableNames, allTables, schemaName, false, upgradePerformed, password);
-
-    WaitForKey();
-    return result;
-}
-
-/// <summary>
-/// Waits for user to press any key before exiting.
-/// </summary>
-static void WaitForKey()
-{
-    Console.WriteLine();
-    Console.WriteLine("Press any key to exit...");
-    Console.ReadKey(true);
-}
-
-/// <summary>
-/// Checks if the exception indicates a password is required.
-/// </summary>
-/// <param name="ex">The exception to check</param>
-/// <returns>True if password is required</returns>
-static bool IsPasswordRequired(SqlCeException ex) =>
-    ex.Message.IndexOf("password", StringComparison.OrdinalIgnoreCase) >= 0;
-
-/// <summary>
-/// Prompts for database password in interactive mode.
-/// </summary>
-/// <returns>Password entered by user, or null if empty</returns>
-static string? PromptForPassword()
-{
-    Console.WriteLine();
-    Console.Write("Enter database password: ");
-    var password = Console.ReadLine()?.Trim();
-    return string.IsNullOrEmpty(password) ? null : password;
-}
-
-/// <summary>
-/// Opens a SchemaDiscovery, prompting user for upgrade consent and password if needed.
-/// </summary>
-/// <param name="sdfFilePath">Path to the SDF file</param>
-/// <param name="password">Ref: database password (may be set if prompted)</param>
-/// <param name="upgradePerformed">Output: whether upgrade was performed</param>
-/// <param name="existingBackupPath">Path to existing backup from previous upgrade attempt</param>
-/// <returns>SchemaDiscovery instance</returns>
-/// <exception cref="OperationCanceledException">If user declines upgrade</exception>
-/// <exception cref="InvalidOperationException">If upgrade fails</exception>
-static SchemaDiscovery OpenWithUpgradePrompt(string sdfFilePath, ref string? password, out bool upgradePerformed, string? existingBackupPath = null)
-{
-    upgradePerformed = false;
-
-    try
-    {
-        return new SchemaDiscovery(sdfFilePath, password);
-    }
-    catch (SqlCeException ex) when (IsPasswordRequired(ex))
-    {
-        // Database is encrypted, prompt for password
-        password = PromptForPassword();
-        if (password == null)
-        {
-            throw new OperationCanceledException("No password provided for encrypted database.");
-        }
-
-        // Retry with password - may still need upgrade
-        return OpenWithUpgradePrompt(sdfFilePath, ref password, out upgradePerformed, existingBackupPath);
-    }
-    catch (SqlCeException ex) when (SdfUpgrader.IsUpgradeRequired(ex))
-    {
-        // Only prompt for upgrade if no backup exists (first attempt)
-        if (existingBackupPath == null)
-        {
-            Console.WriteLine();
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("Database was created with an older SQL Server CE version.");
-            Console.ResetColor();
-            Console.WriteLine("Upgrade is required to read this file.");
-            Console.WriteLine("A backup will be created before upgrading.");
-            Console.WriteLine();
-            Console.Write("Upgrade now? (Y/N): ");
-
-            var response = Console.ReadLine()?.Trim().ToUpperInvariant();
-            if (response != "Y" && response != "YES")
+            catch (OperationCanceledException)
             {
-                throw new OperationCanceledException("User declined database upgrade.");
+                Console.WriteLine("Export cancelled.");
+                WaitForKey();
+                return (int)ExitCode.Failed;
             }
-
+            catch (InvalidOperationException ex) when (ex.InnerException is SqlCeException)
+            {
+                WriteError(ex.Message);
+                WaitForKey();
+                return (int)ExitCode.Failed;
+            }
+            catch (SqlCeException ex)
+            {
+                WriteError($"Failed to open SDF file: {ex.Message}");
+                WaitForKey();
+                return (int)ExitCode.Failed;
+            }
+        }
+        else
+        {
             Console.WriteLine();
+            Console.WriteLine($"Found {files.Count} .sdf files; all tables of each will be exported.");
         }
 
-        // Try upgrade - may fail if password is needed
+        Console.WriteLine();
+        Console.Write("Output format [sqlite, postgres, mssql, mysql, mariadb] (default: sqlite): ");
+        var formatInput = Console.ReadLine()?.Trim();
+        var dialectKind = SqlDialectKind.Sqlite;
+        if (!string.IsNullOrEmpty(formatInput) && !TryParseDialect(formatInput!, out dialectKind))
+        {
+            Console.WriteLine($"Unknown format '{formatInput}'. Using sqlite.");
+            dialectKind = SqlDialectKind.Sqlite;
+        }
+
+        Console.WriteLine();
+        // upgrade: true here; older files upgrade automatically (single-file case already prompted).
+        var result = RunExport(files, tableNames, dialectKind, verbose: false, upgrade: true, password);
+
+        WaitForKey();
+        return result;
+    }
+
+    static void WaitForKey()
+    {
+        Console.WriteLine();
+        Console.WriteLine("Press any key to exit...");
+        Console.ReadKey(true);
+    }
+
+    // True when the exception means a password is wrong or missing.
+    static bool IsPasswordRequired(SqlCeException ex)
+    {
+        // SQL CE native errors: wrong password, or encrypted DB opened without one.
+        const int InvalidPassword = 25028;
+        const int EncryptedNoPassword = 25538;
+        return ex.NativeError == InvalidPassword
+            || ex.NativeError == EncryptedNoPassword
+            || ex.Message.IndexOf("password", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    static string? PromptForPassword()
+    {
+        Console.WriteLine();
+        Console.Write("Enter database password: ");
+        var password = Console.ReadLine()?.Trim();
+        return string.IsNullOrEmpty(password) ? null : password;
+    }
+
+    // Opens a SchemaDiscovery interactively, prompting for password and upgrade consent as needed.
+    // Recurses after a prompt; throws OperationCanceledException if the user declines.
+    static SchemaDiscovery OpenWithUpgradePrompt(string sdfFilePath, ref string? password, string? existingBackupPath = null)
+    {
         try
         {
-            var upgradeResult = SdfUpgrader.Upgrade(sdfFilePath, password, msg => Console.WriteLine($"  {msg}"), existingBackupPath);
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine($"Database upgraded. Backup: {Path.GetFileName(upgradeResult.BackupFilePath)}");
-            Console.ResetColor();
-
-            upgradePerformed = true;
             return new SchemaDiscovery(sdfFilePath, password);
         }
-        catch (InvalidOperationException upgradeEx) when (upgradeEx.InnerException is SqlCeException sqlEx && IsPasswordRequired(sqlEx))
+        catch (SqlCeException ex) when (IsPasswordRequired(ex))
         {
-            // Upgrade failed due to password - prompt and retry, passing backup path to avoid double backup
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("Database is password-protected.");
-            Console.ResetColor();
-
-            // Find the backup that was created (it's at the predictable path)
-            var backupPath = $"{sdfFilePath}.backup";
-            if (!File.Exists(backupPath))
-            {
-                backupPath = null; // Fallback: let next attempt create a new backup
-            }
-
             password = PromptForPassword();
             if (password == null)
             {
                 throw new OperationCanceledException("No password provided for encrypted database.");
             }
 
-            // Retry with password and pass the existing backup path
-            return OpenWithUpgradePrompt(sdfFilePath, ref password, out upgradePerformed, existingBackupPath: backupPath);
+            // Retry with password; may still need an upgrade.
+            return OpenWithUpgradePrompt(sdfFilePath, ref password, existingBackupPath);
         }
-    }
-}
-
-/// <summary>
-/// Executes the SDF to SQL export workflow.
-/// </summary>
-/// <param name="sdfFile">Source SDF file</param>
-/// <param name="outputFile">Output SQL file (null = derive from input)</param>
-/// <param name="tableNames">Table names to export (empty = auto-detect)</param>
-/// <param name="allTables">Export all tables</param>
-/// <param name="schemaName">PostgreSQL schema name</param>
-/// <param name="verbose">Enable verbose output</param>
-/// <param name="upgrade">Allow database upgrade if needed</param>
-/// <param name="password">Database password for encrypted files</param>
-/// <returns>Exit code (0 = success, non-zero = error)</returns>
-static int RunExport(
-    FileInfo sdfFile,
-    FileInfo? outputFile,
-    string[] tableNames,
-    bool allTables,
-    string schemaName,
-    bool verbose,
-    bool upgrade,
-    string? password)
-{
-    Console.WriteLine($"Opening: {sdfFile.Name}");
-
-    SchemaDiscovery discovery;
-    try
-    {
-        discovery = new SchemaDiscovery(sdfFile.FullName, password);
-    }
-    catch (SqlCeException ex) when (IsPasswordRequired(ex))
-    {
-        WriteError("Database is password-protected. Use --password to provide the password.");
-        return 6;
-    }
-    catch (SqlCeException ex) when (SdfUpgrader.IsUpgradeRequired(ex))
-    {
-        if (!upgrade)
+        catch (SqlCeException ex) when (SdfUpgrader.IsUpgradeRequired(ex))
         {
-            WriteError("Database was created with an older SQL Server CE version and requires upgrade.");
-            Console.WriteLine();
-            Console.WriteLine("To upgrade the database (a backup will be created), use:");
-            Console.WriteLine($"  SdfConverter.exe \"{sdfFile.FullName}\" --upgrade");
-            return 4;
-        }
+            // Prompt for upgrade only on the first attempt (no backup yet).
+            if (existingBackupPath == null)
+            {
+                Console.WriteLine();
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("Database was created with an older SQL Server CE version.");
+                Console.ResetColor();
+                Console.WriteLine("Upgrade is required to read this file.");
+                Console.WriteLine("A backup will be created before upgrading.");
+                Console.WriteLine();
+                Console.Write("Upgrade now? (Y/N): ");
 
-        // Perform upgrade
-        Action<string>? log = verbose ? msg => Console.WriteLine($"  {msg}") : null;
+                var response = Console.ReadLine()?.Trim().ToUpperInvariant();
+                if (response != "Y" && response != "YES")
+                {
+                    throw new OperationCanceledException("User declined database upgrade.");
+                }
+
+                Console.WriteLine();
+            }
+
+            try
+            {
+                var upgradeResult = SdfUpgrader.Upgrade(sdfFilePath, password, msg => Console.WriteLine($"  {msg}"), existingBackupPath);
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"Database upgraded. Backup: {Path.GetFileName(upgradeResult.BackupFilePath)}");
+                Console.ResetColor();
+
+                return new SchemaDiscovery(sdfFilePath, password);
+            }
+            catch (InvalidOperationException upgradeEx) when (upgradeEx.InnerException is SqlCeException sqlEx && IsPasswordRequired(sqlEx))
+            {
+                // Upgrade needs a password; prompt and retry, reusing the backup to avoid a second copy.
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine("Database is password-protected.");
+                Console.ResetColor();
+
+                var backupPath = $"{sdfFilePath}.backup";
+                if (!File.Exists(backupPath))
+                {
+                    backupPath = null; // Let the next attempt create a fresh backup.
+                }
+
+                password = PromptForPassword();
+                if (password == null)
+                {
+                    throw new OperationCanceledException("No password provided for encrypted database.");
+                }
+
+                return OpenWithUpgradePrompt(sdfFilePath, ref password, existingBackupPath: backupPath);
+            }
+        }
+    }
+
+    // Opens a SchemaDiscovery for non-interactive export, upgrading if allowed.
+    // On failure, reports via WriteError and returns null with a non-zero errorCode.
+    static SchemaDiscovery? OpenForExport(string sdfFilePath, bool upgrade, string? password, bool verbose, out int errorCode)
+    {
+        errorCode = 0;
+        var fileName = Path.GetFileName(sdfFilePath);
+
         try
         {
-            var upgradeResult = SdfUpgrader.Upgrade(sdfFile.FullName, password, log);
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine($"Database upgraded. Backup: {Path.GetFileName(upgradeResult.BackupFilePath)}");
-            Console.ResetColor();
-            Console.WriteLine();
+            return new SchemaDiscovery(sdfFilePath, password);
         }
-        catch (InvalidOperationException upgradeEx)
+        catch (SqlCeException ex) when (IsPasswordRequired(ex))
         {
-            WriteError(upgradeEx.Message);
-            return 5;
+            WriteError($"{fileName} is password-protected. Use --password to provide the password.");
+            errorCode = (int)ExitCode.PasswordRequired;
+            return null;
         }
+        catch (SqlCeException ex) when (SdfUpgrader.IsUpgradeRequired(ex))
+        {
+            if (!upgrade)
+            {
+                WriteError($"{fileName} was created with an older SQL Server CE version and requires upgrade. Use --upgrade.");
+                errorCode = (int)ExitCode.UpgradeRequired;
+                return null;
+            }
 
-        // Retry after upgrade
-        discovery = new SchemaDiscovery(sdfFile.FullName, password);
+            Action<string>? log = verbose ? msg => Console.WriteLine($"  {msg}") : null;
+            try
+            {
+                var upgradeResult = SdfUpgrader.Upgrade(sdfFilePath, password, log);
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"Database upgraded. Backup: {Path.GetFileName(upgradeResult.BackupFilePath)}");
+                Console.ResetColor();
+            }
+            catch (InvalidOperationException upgradeEx)
+            {
+                WriteError(upgradeEx.Message);
+                errorCode = (int)ExitCode.UpgradeFailed;
+                return null;
+            }
+
+            return new SchemaDiscovery(sdfFilePath, password);
+        }
     }
 
-    try
+    /// <summary>Exports each SDF file to a combined {sdfname}.sql beside it; returns an exit code.</summary>
+    internal static int RunExport(
+        IReadOnlyList<string> sdfFiles,
+        string[] tableNames,
+        SqlDialectKind dialectKind,
+        bool verbose,
+        bool upgrade,
+        string? password)
     {
-        using (discovery)
+        var hadError = false;
+        var lastError = 0;
+        var filesExported = 0;
+        var totalRecordsAll = 0;
+
+        foreach (var rawPath in sdfFiles)
         {
-            // List available tables
-            var availableTables = discovery.ListTables();
-            if (verbose)
+            var sdfPath = Path.GetFullPath(rawPath);
+            var fileName = Path.GetFileName(sdfPath);
+
+            Console.WriteLine($"\nOpening: {fileName}");
+
+            var discovery = OpenForExport(sdfPath, upgrade, password, verbose, out var openError);
+            if (discovery == null)
             {
-                Console.WriteLine($"\nFound {availableTables.Count} tables:");
-                foreach (var table in availableTables)
-                {
-                    Console.WriteLine($"  - {table.TableName} ({table.RowCount:N0} rows)");
-                }
+                hadError = true;
+                lastError = openError;
+                continue;
             }
 
-            // Determine which tables to export
-            List<string> tablesToExport;
-
-            if (allTables)
+            using (discovery)
             {
-                tablesToExport = availableTables.Select(t => t.TableName).ToList();
-                Console.WriteLine($"\nExporting all {tablesToExport.Count} tables");
-            }
-            else if (tableNames.Length > 0)
-            {
-                tablesToExport = tableNames.ToList();
-                Console.WriteLine($"\nExporting {tablesToExport.Count} specified table(s)");
-            }
-            else
-            {
-                // Auto-detect: try known attendance table patterns
-                var detectedTable = availableTables.FirstOrDefault(t =>
-                    new[] { "CHECKINOUT", "att_log", "attendance", "T_LOG" }
-                        .Any(pattern => string.Equals(t.TableName, pattern, StringComparison.OrdinalIgnoreCase)));
-
-                if (detectedTable != null)
+                try
                 {
-                    tablesToExport = new List<string> { detectedTable.TableName };
-                    Console.WriteLine($"\nAuto-detected table: {detectedTable.TableName}");
-                }
-                else
-                {
-                    WriteError("No attendance table detected. Use --table <name> or --all-tables.");
-                    if (availableTables.Count > 0)
+                    var availableTables = discovery.ListTables();
+                    if (verbose)
                     {
-                        Console.WriteLine("\nAvailable tables:");
+                        Console.WriteLine($"Found {availableTables.Count} tables:");
                         foreach (var table in availableTables)
                         {
                             Console.WriteLine($"  - {table.TableName} ({table.RowCount:N0} rows)");
                         }
                     }
-                    return 2;
-                }
-            }
 
-            // Export each table
-            var writer = new SqlWriter(schemaName);
-            var totalRecords = 0;
-            var totalFiles = 0;
-
-            foreach (var tableName in tablesToExport)
-            {
-                // Verify table exists
-                var tableInfo = availableTables.FirstOrDefault(t =>
-                    string.Equals(t.TableName, tableName, StringComparison.OrdinalIgnoreCase));
-
-                if (tableInfo == null)
-                {
-                    WriteError($"Table '{tableName}' not found in database.");
-                    continue;
-                }
-
-                // Determine output path
-                string outputPath;
-                if (outputFile != null && tablesToExport.Count == 1)
-                {
-                    outputPath = outputFile.FullName;
-                }
-                else
-                {
-                    // Multiple tables: use {sdfName}_{tableName}.sql
-                    var baseName = Path.GetFileNameWithoutExtension(sdfFile.Name);
-                    var directory = outputFile?.DirectoryName ?? Path.GetDirectoryName(sdfFile.FullName) ?? ".";
-                    outputPath = Path.Combine(directory, $"{baseName}_{tableInfo.TableName}.sql");
-                }
-
-                Console.WriteLine($"\n--- Exporting: {tableInfo.TableName} ({tableInfo.RowCount:N0} rows) ---");
-
-                // Get full table schema
-                var schema = discovery.GetTableSchema(tableInfo.TableName);
-
-                if (verbose)
-                {
-                    Console.WriteLine("Columns:");
-                    foreach (var col in schema.Columns)
+                    var selected = new List<TableInfo>();
+                    if (tableNames.Length > 0)
                     {
-                        Console.WriteLine($"  {col.ColumnName} ({col.DataType})");
+                        foreach (var name in tableNames)
+                        {
+                            var match = availableTables.FirstOrDefault(t =>
+                                string.Equals(t.TableName, name, StringComparison.OrdinalIgnoreCase));
+                            if (match == null)
+                            {
+                                WriteError($"Table '{name}' not found in {fileName}.");
+                            }
+                            else
+                            {
+                                selected.Add(match);
+                            }
+                        }
                     }
+                    else
+                    {
+                        selected.AddRange(availableTables);
+                    }
+
+                    if (selected.Count == 0)
+                    {
+                        WriteError($"No tables to export from {fileName}.");
+                        hadError = true;
+                        lastError = (int)ExitCode.NoInput;
+                        continue;
+                    }
+
+                    var schemas = selected.Select(t => discovery.GetTableSchema(t.TableName)).ToList();
+                    var totalRows = schemas.Sum(s => s.RowCount);
+                    var tableSummary = schemas.Count == 1 ? schemas[0].TableName : $"{schemas.Count} tables";
+                    var metadata = new SourceMetadata(fileName, tableSummary, totalRows);
+
+                    var dialect = SqlDialectFactory.Create(dialectKind);
+                    var writer = new SqlWriter(dialect);
+
+                    var outputPath = Path.Combine(
+                        Path.GetDirectoryName(sdfPath) ?? ".",
+                        Path.GetFileNameWithoutExtension(sdfPath) + ".sql");
+
+                    Console.WriteLine($"Exporting {schemas.Count} table(s) to {Path.GetFileName(outputPath)} [{dialectKind}]");
+
+                    var result = writer.ExportDatabase(
+                        discovery.Connection,
+                        schemas,
+                        outputPath,
+                        metadata,
+                        schema => CreateProgressReporter(schema.RowCount),
+                        schema => Console.WriteLine($"\n--- Exporting: {schema.TableName} ({schema.RowCount:N0} rows) ---"));
+
+                    Console.WriteLine(); // End the progress line.
+                    DisplaySummary(result, outputPath, verbose);
+
+                    filesExported++;
+                    totalRecordsAll += result.RecordsWritten;
                 }
-
-                // Export using streaming (constant memory usage)
-                Console.WriteLine($"Exporting to: {Path.GetFileName(outputPath)}");
-                var metadata = new SourceMetadata(sdfFile.Name, schema.TableName, tableInfo.RowCount);
-                var exportProgress = CreateProgressReporter(schema.RowCount);
-                var exportResult = SdfReader.ExportTableStreaming(
-                    discovery.Connection, schema, outputPath, writer, metadata, exportProgress);
-                Console.WriteLine(); // Newline after progress
-
-                // Display summary for this table
-                DisplayStreamingSummary(exportResult, outputPath, verbose);
-
-                totalRecords += exportResult.RecordsWritten;
-                totalFiles++;
+                catch (SqlCeException ex)
+                {
+                    WriteError($"Failed to read {fileName}: {ex.Message}");
+                    hadError = true;
+                    lastError = (int)ExitCode.Failed;
+                }
+                catch (IOException ex)
+                {
+                    WriteError($"Failed to write output for {fileName}: {ex.Message}");
+                    hadError = true;
+                    lastError = (int)ExitCode.WriteFailed;
+                }
             }
+        }
 
-            // Overall summary for multiple tables
-            if (tablesToExport.Count > 1)
+        // Batch summary, only when more than one file was processed.
+        if (sdfFiles.Count > 1)
+        {
+            Console.WriteLine("\n=== Batch Complete ===");
+            Console.WriteLine($"  Files exported: {filesExported}");
+            Console.WriteLine($"  Total records:  {totalRecordsAll:N0}");
+        }
+
+        return hadError ? lastError : 0;
+    }
+
+    // Console progress reporter that redraws only when the percentage changes.
+    static IProgress<int> CreateProgressReporter(long totalRecords)
+    {
+        var lastReported = -1;
+        return new Progress<int>(current =>
+        {
+            var percentage = totalRecords > 0
+                ? (int)(current * 100 / totalRecords)
+                : 0;
+
+            if (percentage != lastReported)
             {
-                Console.WriteLine($"\n=== Export Complete ===");
-                Console.WriteLine($"  Tables exported: {totalFiles}");
-                Console.WriteLine($"  Total records:   {totalRecords:N0}");
+                Console.Write($"\r  [{current:N0}/{totalRecords:N0}] {percentage}%");
+                lastReported = percentage;
+            }
+        });
+    }
+
+    /// <summary>Writes an error message to stderr in red.</summary>
+    internal static void WriteError(string message)
+    {
+        Console.ForegroundColor = ConsoleColor.Red;
+        Console.Error.WriteLine($"Error: {message}");
+        Console.ResetColor();
+    }
+
+    // Prints the per-file export summary, plus warnings (capped unless verbose).
+    static void DisplaySummary(
+        StreamingExportResult result,
+        string outputPath,
+        bool verbose)
+    {
+        Console.WriteLine("Export complete:");
+        Console.WriteLine($"  Records exported: {result.RecordsWritten:N0}");
+
+        if (result.SkippedCount > 0)
+        {
+            Console.WriteLine($"  Records skipped:  {result.SkippedCount:N0}");
+        }
+
+        if (verbose)
+        {
+            Console.WriteLine($"  Batches written:  {result.BatchCount:N0}");
+        }
+
+        Console.WriteLine($"  Output file:      {Path.GetFileName(outputPath)} ({FormatFileSize(result.FileSizeBytes)})");
+
+        if (result.Warnings.Count > 0)
+        {
+            Console.WriteLine("\nWarnings:");
+            var maxWarnings = verbose ? result.Warnings.Count : Math.Min(5, result.Warnings.Count);
+
+            for (var i = 0; i < maxWarnings; i++)
+            {
+                Console.WriteLine($"  - {result.Warnings[i]}");
             }
 
-            return 0;
+            if (!verbose && result.Warnings.Count > 5)
+            {
+                Console.WriteLine($"  ... and {result.Warnings.Count - 5} more (use --verbose to see all)");
+            }
         }
     }
-    catch (SqlCeException ex)
-    {
-        WriteError($"Failed to read SDF file: {ex.Message}");
-        return 1;
-    }
-    catch (IOException ex)
-    {
-        WriteError($"Failed to write output file: {ex.Message}");
-        return 3;
-    }
-}
 
-/// <summary>
-/// Creates a console progress reporter for export operations.
-/// </summary>
-/// <param name="totalRecords">Total records to process</param>
-/// <returns>Progress reporter instance</returns>
-static IProgress<int> CreateProgressReporter(long totalRecords)
-{
-    var lastReported = -1;
-    return new Progress<int>(current =>
+    // Formats a byte count as a human-readable size (e.g. "2.3 MB").
+    static string FormatFileSize(long bytes)
     {
-        var percentage = totalRecords > 0
-            ? (int)(current * 100 / totalRecords)
-            : 0;
+        string[] units = ["B", "KB", "MB", "GB"];
+        var size = (double)bytes;
+        var unitIndex = 0;
 
-        // Only update when percentage changes to reduce console noise
-        if (percentage != lastReported)
+        while (size >= 1024 && unitIndex < units.Length - 1)
         {
-            Console.Write($"\r  [{current:N0}/{totalRecords:N0}] {percentage}%");
-            lastReported = percentage;
-        }
-    });
-}
-
-/// <summary>
-/// Displays an error message to console with consistent formatting.
-/// </summary>
-/// <param name="message">Error message</param>
-static void WriteError(string message)
-{
-    Console.ForegroundColor = ConsoleColor.Red;
-    Console.Error.WriteLine($"Error: {message}");
-    Console.ResetColor();
-}
-
-/// <summary>
-/// Displays the export summary for streaming export.
-/// </summary>
-/// <param name="result">Result from streaming export</param>
-/// <param name="outputPath">Output file path</param>
-/// <param name="verbose">Whether verbose mode is enabled</param>
-static void DisplayStreamingSummary(
-    StreamingExportResult result,
-    string outputPath,
-    bool verbose)
-{
-    Console.WriteLine("Export complete:");
-    Console.WriteLine($"  Records exported: {result.RecordsWritten:N0}");
-
-    if (result.SkippedCount > 0)
-    {
-        Console.WriteLine($"  Records skipped:  {result.SkippedCount:N0}");
-    }
-
-    if (verbose)
-    {
-        Console.WriteLine($"  Batches written:  {result.BatchCount:N0}");
-    }
-
-    Console.WriteLine($"  Output file:      {Path.GetFileName(outputPath)} ({FormatFileSize(result.FileSizeBytes)})");
-
-    // Display warnings if any
-    if (result.Warnings.Count > 0)
-    {
-        Console.WriteLine("\nWarnings:");
-        var maxWarnings = verbose ? result.Warnings.Count : Math.Min(5, result.Warnings.Count);
-
-        for (var i = 0; i < maxWarnings; i++)
-        {
-            Console.WriteLine($"  - {result.Warnings[i]}");
+            size /= 1024;
+            unitIndex++;
         }
 
-        if (!verbose && result.Warnings.Count > 5)
-        {
-            Console.WriteLine($"  ... and {result.Warnings.Count - 5} more (use --verbose to see all)");
-        }
+        return $"{size:0.#} {units[unitIndex]}";
     }
-}
-
-/// <summary>
-/// Formats byte count as human-readable file size.
-/// </summary>
-/// <param name="bytes">File size in bytes</param>
-/// <returns>Formatted string (e.g., "2.3 MB")</returns>
-static string FormatFileSize(long bytes)
-{
-    string[] units = ["B", "KB", "MB", "GB"];
-    var size = (double)bytes;
-    var unitIndex = 0;
-
-    while (size >= 1024 && unitIndex < units.Length - 1)
-    {
-        size /= 1024;
-        unitIndex++;
-    }
-
-    return $"{size:0.#} {units[unitIndex]}";
 }

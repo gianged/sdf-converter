@@ -1,0 +1,7 @@
+root = true
+
+# IsExternalInit must live in System.Runtime.CompilerServices for records to
+# compile on net48, so its namespace intentionally does not match the folder.
+[**/IsExternalInit.cs]
+dotnet_style_namespace_match_folder = false
+dotnet_diagnostic.IDE0130.severity = none

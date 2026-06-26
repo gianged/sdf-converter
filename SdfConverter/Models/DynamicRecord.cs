@@ -2,11 +2,7 @@ using System.Collections.Generic;
 
 namespace SdfConverter.Models;
 
-/// <summary>
-/// Represents a single database record with dynamic column values.
-/// Used for exporting tables without predefined column mappings.
-/// </summary>
-/// <param name="Values">Dictionary mapping column names to their values (null for NULL values)</param>
+/// <summary>One row as a column-name to value map (null = SQL NULL).</summary>
 public record DynamicRecord(
     IReadOnlyDictionary<string, object?> Values
 );

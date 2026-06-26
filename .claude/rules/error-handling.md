@@ -5,16 +5,17 @@ paths:
 
 # Error handling
 
-This is a CLI: expected failures return data, unexpected ones throw. Follow the existing split.
+This is a CLI: lower layers throw, the command boundary catches and turns failures into exit codes. Follow the existing split.
 
-## Expected failures: return, don't throw
+## Expected failures: catch at the CLI boundary, map to an exit code
 
-- For foreseeable failures (schema/column discovery, mapping), return a tuple `(TResult? Result, TError? Error)` and have the caller check `Error != null`. See `SchemaDiscovery.cs`. Don't throw for these; the caller is meant to handle them inline.
+- Lower layers (`SchemaDiscovery`, `SdfUpgrader`, `SdfReader`) let provider exceptions propagate; they do not return error tuples. The boundary in `Program.cs` catches them with `when` filters (e.g. `catch (SqlCeException ex) when (IsPasswordRequired(ex))`) and decides what to do.
 - Surface user-facing errors through the `WriteError` helper (red text to `Console.Error`, `Error: ` prefix), then return a non-zero exit code. See `Program.cs`.
+- Per-row data errors during streaming are the exception to "abort on failure": `SdfReader.StreamTableInto` skips the offending row, records a warning, and keeps going. It still lets IO and catastrophic failures propagate.
 
 ## Exit codes
 
-- The command handler returns an `int` exit code: `0` on success, a distinct non-zero code per failure class. Reuse an existing code for the same kind of failure; add a new one only for a genuinely new class.
+- Exit codes live in one place, the `ExitCode` enum (`ExitCode.cs`); the command handler returns `(int)ExitCode.X`. `Success = 0`, with a distinct non-zero value per failure class. Reuse an existing member for the same kind of failure; add a new one only for a genuinely new class.
 
 ## Exceptions: for the unexpected
 

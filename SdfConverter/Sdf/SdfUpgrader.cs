@@ -4,38 +4,24 @@ using System.IO;
 
 using SdfConverter.Models;
 
-namespace SdfConverter;
+namespace SdfConverter.Sdf;
 
-/// <summary>
-/// Handles SQL Server CE database version upgrades.
-/// Upgrades older SDF files (v2.0, 3.0, 3.1, 3.5) to v4.0 format.
-/// </summary>
+/// <summary>Upgrades legacy SQL Server CE files (2.0-3.5) to the 4.0 format.</summary>
 public static class SdfUpgrader
 {
-    /// <summary>
-    /// SQL CE native error code indicating version upgrade is required.
-    /// Error: "The database file has been created by an earlier version of SQL Server Compact."
-    /// </summary>
+    // SQL CE native error: file created by an earlier CE version, upgrade required.
     private const int UpgradeRequiredErrorCode = 25138;
 
-    /// <summary>
-    /// Checks if the SqlCeException indicates a version upgrade is required.
-    /// </summary>
-    /// <param name="ex">The exception to check</param>
-    /// <returns>True if upgrade is needed, false otherwise</returns>
+    /// <summary>True if the exception means the file needs a version upgrade.</summary>
     public static bool IsUpgradeRequired(SqlCeException ex) =>
         ex.NativeError == UpgradeRequiredErrorCode;
 
-    /// <summary>
-    /// Creates a backup of the SDF file before upgrade.
-    /// </summary>
-    /// <param name="sdfFilePath">Path to the original SDF file</param>
-    /// <returns>Path to the backup file</returns>
+    /// <summary>Copies the SDF to a .backup file and returns its path.</summary>
     public static string CreateBackup(string sdfFilePath)
     {
         var backupPath = $"{sdfFilePath}.backup";
 
-        // If backup already exists, add timestamp to avoid overwriting
+        // Timestamp the backup name if one already exists.
         if (File.Exists(backupPath))
         {
             var timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
@@ -46,27 +32,16 @@ public static class SdfUpgrader
         return backupPath;
     }
 
-    /// <summary>
-    /// Builds a SQL Server CE connection string with optional password.
-    /// </summary>
-    /// <param name="sdfFilePath">Path to the SDF file</param>
-    /// <param name="password">Optional database password</param>
-    /// <returns>Connection string</returns>
+    /// <summary>Builds a SQL Server CE connection string, with the password if given.</summary>
     public static string BuildConnectionString(string sdfFilePath, string? password = null) =>
         string.IsNullOrEmpty(password)
             ? $"Data Source={sdfFilePath}"
             : $"Data Source={sdfFilePath};Password={password}";
 
     /// <summary>
-    /// Upgrades an SDF file to SQL Server CE 4.0 format.
-    /// Creates a backup before performing the destructive in-place upgrade.
+    /// Upgrades an SDF file to the 4.0 format in place, backing it up first.
+    /// On failure the original is restored from the backup.
     /// </summary>
-    /// <param name="sdfFilePath">Path to the SDF file to upgrade</param>
-    /// <param name="password">Optional database password for encrypted databases</param>
-    /// <param name="log">Optional callback for verbose logging</param>
-    /// <param name="existingBackupPath">Optional path to existing backup (skips creating new backup)</param>
-    /// <returns>Result containing backup path and upgrade status</returns>
-    /// <exception cref="InvalidOperationException">If upgrade fails</exception>
     public static SdfUpgradeResult Upgrade(string sdfFilePath, string? password = null, Action<string>? log = null, string? existingBackupPath = null)
     {
         string backupPath;
@@ -92,11 +67,11 @@ public static class SdfUpgrader
             engine.Upgrade();
 
             log?.Invoke("Upgrade completed successfully.");
-            return new SdfUpgradeResult(backupPath, true);
+            return new SdfUpgradeResult(backupPath);
         }
         catch (SqlCeException ex)
         {
-            // Restore from backup on failure
+            // Restore the original from backup before reporting failure.
             log?.Invoke($"Upgrade failed: {ex.Message}");
             log?.Invoke("Restoring from backup...");
 

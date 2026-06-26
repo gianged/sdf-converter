@@ -1,12 +1,6 @@
 namespace SdfConverter.Models;
 
-/// <summary>
-/// Represents metadata about a database column.
-/// </summary>
-/// <param name="ColumnName">Original column name in SDF</param>
-/// <param name="DataType">SQL Server CE data type</param>
-/// <param name="IsNullable">Whether column allows NULL values</param>
-/// <param name="OrdinalPosition">Column position (1-based)</param>
+/// <summary>Metadata for one database column (type, nullability, 1-based position).</summary>
 public record ColumnInfo(
     string ColumnName,
     string DataType,
