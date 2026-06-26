@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/gianged/sdf-converter/compare/v1.0.6...v1.1.0) (2026-06-26)
+
+
+### Features
+
+* Expand export capabilities to support multiple SQL dialects and update CLI structure. ([f606843](https://github.com/gianged/sdf-converter/commit/f606843c62891c8e800db0cb69b2e1571c1316ec))
+
 ## [1.0.6](https://github.com/gianged/sdf-converter/compare/v1.0.5...v1.0.6) (2025-11-25)
 
 
