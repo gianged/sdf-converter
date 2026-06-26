@@ -12,9 +12,48 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           config-file: .github/release-please/config.json
           manifest-file: .github/release-please/.release-please-manifest.json
+
+  build:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build Release
+        run: dotnet publish SdfConverter/SdfConverter.csproj -c Release -o ./publish
+
+      - name: Create Release Archive
+        shell: pwsh
+        run: |
+          # Create zip with exe, config, and native DLL directories
+          Compress-Archive -Path ./publish/SdfConverter.exe, ./publish/SdfConverter.exe.config, ./publish/x86, ./publish/amd64 -DestinationPath ./SdfConverter-${{ needs.release-please.outputs.tag_name }}.zip
+
+      - name: Generate SHA256 Checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash -Path ./SdfConverter-${{ needs.release-please.outputs.tag_name }}.zip -Algorithm SHA256).Hash
+          "$hash  SdfConverter-${{ needs.release-please.outputs.tag_name }}.zip" | Out-File -FilePath ./SdfConverter-${{ needs.release-please.outputs.tag_name }}.zip.sha256 -Encoding ASCII
+
+      - name: Upload Release Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-please.outputs.tag_name }}
+          files: |
+            ./SdfConverter-${{ needs.release-please.outputs.tag_name }}.zip
+            ./SdfConverter-${{ needs.release-please.outputs.tag_name }}.zip.sha256
