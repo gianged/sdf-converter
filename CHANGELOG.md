@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/gianged/sdf-converter/compare/v1.1.0...v1.1.1) (2026-06-26)
+
+
+### Bug Fixes
+
+* build and attach release assets via release-please workflow ([7127d6c](https://github.com/gianged/sdf-converter/commit/7127d6cad18f0ea16568552c2ea92e6346e8ef4c))
+
 ## [1.1.0](https://github.com/gianged/sdf-converter/compare/v1.0.6...v1.1.0) (2026-06-26)
 
 
